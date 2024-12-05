@@ -1,0 +1,59 @@
+version: "3.9"
+
+services:
+  victoria-metrics:
+    image: victoriametrics/victoria-metrics:latest
+    container_name: victoria-metrics
+    ports:
+      - "8428:8428" # Porta de acesso ao VictoriaMetrics
+    command:
+      - '--retentionPeriod=1' # Retenção das métricas em dias (ajuste conforme necessário)
+    volumes:
+      - victoria-data:/victoria-metrics-data
+
+  vmagent:
+    image: victoriametrics/vmagent:latest
+    container_name: vmagent
+    ports:
+      - "8429:8429" # Porta para expor métricas e configuração
+    command:
+      - '--remoteWrite.url=http://victoria-metrics:8428/api/v1/write' # Enviar métricas para o VictoriaMetrics
+      - '--promscrape.config=/etc/vmagent-config.yaml' # Configuração de scraping
+    volumes:
+      - ./vmagent-config.yaml:/etc/vmagent-config.yaml:ro # Configuração do vmagent
+    depends_on:
+      - victoria-metrics
+
+  vmalert:
+    image: victoriametrics/vmalert:latest
+    container_name: vmalert
+    ports:
+      - "8880:8880" # Porta do vmalert
+    command:
+      - '--datasource.url=http://victoria-metrics:8428' # Conectar ao VictoriaMetrics
+      - '--rule=/etc/vmalert-rules.yaml' # Arquivo de regras de alertas
+      - '--notifier.url=http://localhost:9093' # Exemplo de integração com Alertmanager (opcional)
+    volumes:
+      - ./vmalert-rules.yaml:/etc/vmalert-rules.yaml:ro
+    depends_on:
+      - victoria-metrics
+
+  target-api:
+    image: python:3.9-slim
+    container_name: target-api
+    ports:
+      - "5000:5000" # Porta da API de exemplo
+    volumes:
+      - ./api:/app
+    working_dir: /app
+    command: ["python", "app.py"]
+    environment:
+      - PYTHONUNBUFFERED=1
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+
+
+
+volumes:
+  victoria-data:
