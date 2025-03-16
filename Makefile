@@ -4,7 +4,7 @@
 .DEFAULT_GOAL := help
 
 # Variables
-DOCKER_COMPOSE = docker-compose
+DOCKER_COMPOSE = docker compose
 STRESS_TEST_URL = http://localhost:8081/run-test
 
 # Help target
@@ -28,6 +28,8 @@ up:
 	$(DOCKER_COMPOSE) up -d
 	@echo "Services started. API available at http://localhost:5000"
 	@echo "Stress test service available at http://localhost:8081"
+	@echo "Victoria metrics is available at http://localhost:8428"
+	@echo "Grafana is available at http://localhost:3000"
 
 # Stop all services
 down:
