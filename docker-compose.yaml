@@ -2,12 +2,23 @@ version: "3.9"
 
 services:
   victoria-metrics:
-    image: victoriametrics/victoria-metrics:latest
+    image: victoriametrics/victoria-metrics
+    restart: always
     container_name: victoria-metrics
     ports:
-      - "8428:8428" # Porta de acesso ao VictoriaMetrics
+      - 8428:8428
+      - 8089:8089
+      - 8089:8089/udp
+      - 2003:2003
+      - 2003:2003/udp
+      - 4242:4242
     command:
-      - '--retentionPeriod=1' # Retenção das métricas em dias (ajuste conforme necessário)
+      - "--storageDataPath=/storage"
+      - "--graphiteListenAddr=:2003"
+      - "--opentsdbListenAddr=:4242"
+      - "--httpListenAddr=:8428"
+      - "--influxListenAddr=:8089"
+      - "--vmalert.proxyURL=http://vmalert:8880"
     volumes:
       - victoria-data:/victoria-metrics-data
 
@@ -15,12 +26,12 @@ services:
     image: victoriametrics/vmagent:latest
     container_name: vmagent
     ports:
-      - "8429:8429" # Porta para expor métricas e configuração
+      - "8429:8429" 
     command:
       - '--remoteWrite.url=http://victoria-metrics:8428/api/v1/write' # Enviar métricas para o VictoriaMetrics
-      - '--promscrape.config=/etc/vmagent-config.yaml' # Configuração de scraping
+      - '--promscrape.config=/etc/vmagent-config.yaml' 
     volumes:
-      - ./vmagent-config.yaml:/etc/vmagent-config.yaml:ro # Configuração do vmagent
+      - ./config/vmagent/vmagent-config.yaml:/etc/vmagent-config.yaml:ro # Configuração do vmagent
     depends_on:
       - victoria-metrics
 
@@ -28,13 +39,13 @@ services:
     image: victoriametrics/vmalert:latest
     container_name: vmalert
     ports:
-      - "8880:8880" # Porta do vmalert
+      - "8880:8880" 
     command:
       - '--datasource.url=http://victoria-metrics:8428' # Conectar ao VictoriaMetrics
       - '--rule=/etc/vmalert-rules.yaml' # Arquivo de regras de alertas
       - '--notifier.url=http://localhost:9093' # Exemplo de integração com Alertmanager (opcional)
     volumes:
-      - ./vmalert-rules.yaml:/etc/vmalert-rules.yaml:ro
+      - ./config/vmalert/vmalert-rules.yaml:/etc/vmalert-rules.yaml:ro
     depends_on:
       - victoria-metrics
 
@@ -53,7 +64,35 @@ services:
       context: ./api
       dockerfile: Dockerfile
 
+  grafana:
+    image: grafana/grafana
+    restart: always
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      - ./config/grafana/datasources/grafana.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
 
+  stress-test-service:
+    build:
+      context: ./stress-test
+    container_name: stress-test-service
+    ports:
+      - "8081:8080"
+    depends_on:
+      - target-api
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    environment:
+      - PYTHONUNBUFFERED=1
+      - GUNICORN_CMD_ARGS="--access-logfile=- --error-logfile=- --log-level=info"
 
 volumes:
   victoria-data:
