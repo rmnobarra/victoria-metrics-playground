@@ -19,13 +19,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG = {
     "api_url": "http://target-api:5000",  # URL of the API
     "endpoints": [
-        {"path": "/", "method": "GET"},
-        {"path": "/status", "method": "GET"},
-        {"path": "/submit", "method": "POST", "data": {"name": "John Doe", "email": "john@example.com"}}
+        {"path": "/", "method": "GET", "weight": 10},
+        {"path": "/status", "method": "GET", "weight": 5},
+        {"path": "/submit", "method": "POST", "data": {"name": "John Doe", "email": "john@example.com"}, "weight": 8}
     ],
     "concurrent_requests": 50,            # Number of simultaneous connections
     "test_duration": 30,                  # Test duration in seconds
-    "request_timeout": 5                  # Timeout for each request in seconds
+    "request_timeout": 5,                 # Timeout for each request in seconds
+    "use_weights": True                   # Whether to use endpoint weights for distribution
 }
 
 # Global state
@@ -83,11 +84,27 @@ async def worker(session, request_queue, results, api_url):
                 
             # Make the request
             status = await make_request(session, endpoint_config, api_url)
+            
+            # Update overall results
             results["total"] += 1
             if status == 200:
                 results["success"] += 1
             else:
                 results["failed"] += 1
+            
+            # Update per-endpoint statistics if not already tracking
+            endpoint_key = f"{endpoint_config['method']}:{endpoint_config['path']}"
+            if "endpoint_stats" not in results:
+                results["endpoint_stats"] = {}
+                
+            if endpoint_key not in results["endpoint_stats"]:
+                results["endpoint_stats"][endpoint_key] = {"total": 0, "success": 0, "failed": 0}
+                
+            results["endpoint_stats"][endpoint_key]["total"] += 1
+            if status == 200:
+                results["endpoint_stats"][endpoint_key]["success"] += 1
+            else:
+                results["endpoint_stats"][endpoint_key]["failed"] += 1
                 
             request_queue.task_done()
         except Exception as e:
@@ -105,8 +122,17 @@ async def run_load_test(config):
     logger.info(f"Target API: {config['api_url']}")
     
     # Fixed f-string syntax
-    endpoint_list = [f"{e['method']} {e['path']}" for e in config['endpoints']]
+    endpoint_list = [f"{e['method']} {e['path']} (weight: {e.get('weight', 1)})" for e in config['endpoints']]
     logger.info(f"Target endpoints: {endpoint_list}")
+    
+    # Prepare weighted distribution if enabled
+    use_weights = config.get("use_weights", True)
+    if use_weights:
+        # Create weighted distribution for endpoint selection
+        endpoints = config['endpoints']
+        weights = [endpoint.get('weight', 1) for endpoint in endpoints]
+        total_weight = sum(weights)
+        logger.info(f"Using weighted distribution with total weight: {total_weight}")
     
     connector = aiohttp.TCPConnector(limit=0, ttl_dns_cache=300)
     async with ClientSession(timeout=timeout, connector=connector) as session:
@@ -124,11 +150,26 @@ async def run_load_test(config):
         # Generate load until the test duration is reached
         try:
             while time.time() - start_time < config['test_duration']:
-                # Randomly select an endpoint configuration
-                endpoint_config = random.choice(config['endpoints'])
-                await request_queue.put(endpoint_config)
-                # Small delay to avoid overloading the queue
-                await asyncio.sleep(0.01)
+                # Select an endpoint configuration based on weights or randomly
+                if use_weights and total_weight > 0:
+                    # Weighted random selection
+                    r = random.uniform(0, total_weight)
+                    cumulative_weight = 0
+                    selected_endpoint = config['endpoints'][0]
+                    
+                    for i, endpoint in enumerate(config['endpoints']):
+                        cumulative_weight += endpoint.get('weight', 1)
+                        if r <= cumulative_weight:
+                            selected_endpoint = endpoint
+                            break
+                else:
+                    # Simple random selection (equal probability)
+                    selected_endpoint = random.choice(config['endpoints'])
+                
+                await request_queue.put(selected_endpoint)
+                
+                # Add randomness to request timing
+                await asyncio.sleep(random.uniform(0.001, 0.02))
         
         except Exception as e:
             logger.error(f"Test error during request generation: {str(e)}")
@@ -149,6 +190,12 @@ async def run_load_test(config):
     results["total_time"] = round(total_time, 2)
     results["requests_per_second"] = round(requests_per_second, 2)
     results["success_rate"] = round(success_rate, 2)
+    
+    # Track per-endpoint statistics
+    if "endpoint_stats" in results:
+        for endpoint, stats in results["endpoint_stats"].items():
+            if stats["total"] > 0:
+                stats["success_rate"] = round((stats["success"] / stats["total"]) * 100, 2)
     
     logger.info(f"Test completed in {total_time:.2f} seconds")
     logger.info(f"Total requests: {results['total']}")
@@ -313,6 +360,7 @@ def run_test():
             current_config["test_duration"] = data.get("seconds", 30)
             current_config["concurrent_requests"] = data.get("requests", 50)
             current_config["request_timeout"] = data.get("timeout", 5)
+            current_config["use_weights"] = data.get("use_weights", True)
             
             # If custom endpoints are provided, use them
             if "endpoints" in data:
